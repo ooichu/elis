@@ -1,0 +1,33 @@
+; ./elis tests/julia.lsp > image.ppm
+
+(= WIDTH  640
+   HEIGHT 480
+   DEPTH  255
+   HALF-WIDTH (/ WIDTH 2)
+   HALF-HEIGHT (/ HEIGHT 2)
+)
+
+(print "P3" WIDTH HEIGHT DEPTH)
+
+(do
+  (let y 0)
+  (while (< y HEIGHT)
+    (let x 0)
+    (while (< x WIDTH)
+      (let zr (* 1.5 (/ (- x HALF-WIDTH) HALF-WIDTH))
+           zi (/ (- y HALF-HEIGHT) HALF-HEIGHT)
+           i 0
+      )
+      (while (and (< i DEPTH) (< (+ (* zr zr) (* zi zi)) 4))
+        (let old-zr zr)
+        (= zr (- (* zr zr) (* zi zi) 0.7)
+           zi (+ (* old-zr zi 2) 0.27015)
+           i (+ i 1)
+        )
+      )
+      (print i i (* i 8))
+      (= x (+ x 1))
+    )
+    (= y (+ y 1))
+  )
+)
