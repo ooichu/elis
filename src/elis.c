@@ -653,7 +653,7 @@ static void set(elis_State *S, elis_Object *sym, elis_Object *val, elis_Object *
       *obj = *check_type(S, res, ELIS_PAIR);                                             \
       elis_restore_gc(S, gc);                                                            \
       S->calls = restore;                                                                \
-      return apply(S, obj, env, new_env);                                                \
+      return eval(S, obj, env, new_env);                                                 \
     }                                                                                    \
     case ELIS_BUILTIN:                                                                   \
       switch (BUILTIN(func)) {                                                           \
