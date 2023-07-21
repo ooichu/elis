@@ -70,9 +70,7 @@ static const char *const builtins[] = {
 
 struct elis_State {
   int stack_idx, next_char;
-  elis_Object *stack[ELIS_STACK_SIZE];
-  elis_Object *pages, *calls, *symbols, *free;
-  elis_Object *t, *quote;
+  elis_Object *calls, *free, *pages, *symbols, *t, *quote, *stack[ELIS_STACK_SIZE];
   elis_Allocator allocator;
   elis_Error error;
   void *userdata;
@@ -357,22 +355,23 @@ int elis_is(elis_State *S, elis_Object *a, elis_Object *b) {
   return 0;
 }
 
-static void check_type(elis_State *S, elis_Object *obj, int type) {
+static elis_Object *check_type(elis_State *S, elis_Object *obj, int type) {
   char buf[40];
   if (TYPE(obj) != type) {
     sprintf(buf, "expected %s, got %s", elis_typenames[type], elis_typenames[TYPE(obj)]);
     elis_error(S, buf);
   }
+  return obj;
 }
 
 elis_Object *elis_car(elis_State *S, elis_Object *obj) {
   if (obj == &nil) return obj;
-  return check_type(S, obj, ELIS_PAIR), CAR(obj);
+  return CAR(check_type(S, obj, ELIS_PAIR));
 }
 
 elis_Object *elis_cdr(elis_State *S, elis_Object *obj) {
   if (obj == &nil) return obj;
-  return check_type(S, obj, ELIS_PAIR), CDR(obj);
+  return CDR(check_type(S, obj, ELIS_PAIR));
 }
 
 void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_Handlers **hdlrs) {
@@ -382,7 +381,7 @@ void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_Handlers **hdlrs) {
 }
 
 elis_Number elis_to_number(elis_State *S, elis_Object *obj) {
-  return check_type(S, obj, ELIS_NUMBER), NUMBER(obj);
+  return NUMBER(check_type(S, obj, ELIS_NUMBER));
 }
 
 const char *elis_to_string(elis_State *S, elis_Object *obj) {
@@ -390,7 +389,7 @@ const char *elis_to_string(elis_State *S, elis_Object *obj) {
     obj = CAR(CDR(obj));
     if (obj == &nil) return "";
   }
-  return check_type(S, obj, ELIS_STRING), STRING(obj);
+  return STRING(check_type(S, obj, ELIS_STRING));
 }
 
 #define END_OF_SEXPR ((elis_Object*) 1)
@@ -601,14 +600,6 @@ static elis_Object *eval_list(elis_State *S, elis_Object *lst, elis_Object *env)
   return res;
 }
 
-static elis_Object *quote_list(elis_State *S, elis_Object *lst) {
-  elis_Object *res = &nil, **tail = &res;
-  for (; lst != &nil; tail = &CDR(*tail)) {
-    *tail = elis_cons(S, elis_cons(S, S->quote, elis_cons(S, elis_next_arg(S, &lst), &nil)), &nil);
-  }
-  return res;
-}
-
 static elis_Object *do_list(elis_State *S, elis_Object *lst, elis_Object *env) {
   int gc = elis_save_gc(S);
   elis_Object *res = &nil;
@@ -621,229 +612,222 @@ static elis_Object *do_list(elis_State *S, elis_Object *lst, elis_Object *env) {
   return res;
 }
 
-static elis_Object *bind_args(elis_State *S, elis_Object *prm, elis_Object *args, elis_Object *env) {
-  for (; prm != &nil; prm = CDR(prm), args = elis_cdr(S, args)) {
-    /* variable number of arguments? */
-    if (TYPE(prm) != ELIS_PAIR) {
-      env = elis_cons(S, elis_cons(S, prm, args), env);
-      break;
-    }
-    /* else, single argument */
+static elis_Object *bind(elis_State *S, elis_Object *prm, elis_Object *args, elis_Object *env) {
+  for (; TYPE(prm) == ELIS_PAIR; prm = CDR(prm), args = elis_cdr(S, args)) {
     env = elis_cons(S, elis_cons(S, CAR(prm), elis_car(S, args)), env);
   }
-  return env;
+  return prm == &nil ? env : elis_cons(S, elis_cons(S, prm, args), env);
 }
 
-#define EVAL_ARG() eval(S, elis_next_arg(S, &args), env, NULL)
-
-#define COMPARE_OP(expr) {                          \
-  elis_Number b, a = elis_to_number(S, EVAL_ARG()); \
-  for (res = S->t; args != &nil; a = b) {           \
-    b = elis_to_number(S, EVAL_ARG());              \
-    if (!(expr)) {                                  \
-      res = &nil;                                   \
-      break;                                        \
-    }                                               \
-  }                                                 \
+static void set(elis_State *S, elis_Object *sym, elis_Object *val, elis_Object *env) {
+  CDR(lookup(check_type(S, sym, ELIS_SYMBOL), env)) = val;
 }
 
-#define ARITH_OP(expr) {                           \
-  elis_Number a = elis_to_number(S, EVAL_ARG());   \
-  while (args != &nil) {                           \
-    elis_Number b = elis_to_number(S, EVAL_ARG()); \
-    a = expr;                                      \
-  }                                                \
-  res = elis_number(S, a);                         \
+#define COMPARE_OP(expr, eval_arg) {                                                     \
+  elis_Number a = elis_to_number(S, eval_arg);                                           \
+  elis_Number b = elis_to_number(S, eval_arg);                                           \
+  res = elis_bool(S, expr);                                                              \
 }
 
-static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env); 
+#define ARITH_OP(expr, eval_arg) {                                                       \
+  elis_Number a = elis_to_number(S, eval_arg);                                           \
+  while (args != &nil) {                                                                 \
+    elis_Number b = elis_to_number(S, eval_arg);                                         \
+    a = expr;                                                                            \
+  }                                                                                      \
+  res = elis_number(S, a);                                                               \
+}
+
+#define CALL(eval_arg, eval_list, restore) {                                             \
+  int gc = elis_save_gc(S);                                                              \
+  elis_Object *res = &nil, *func = eval(S, CAR(obj), env, NULL), *args = CDR(obj);       \
+  /* allowed to call only functions, macros, builtins and cfunctions */                  \
+  switch (TYPE(func)) {                                                                  \
+    case ELIS_FUNCTION:                                                                  \
+      args = eval_list;                                                                  \
+      /* fall through */                                                                 \
+    case ELIS_MACRO: {                                                                   \
+      elis_Object *local = CDR(func), *params = CDR(local);                              \
+      res = do_list(S, CDR(params), bind(S, CAR(params), args, CAR(local)));             \
+      if (TYPE(func) == ELIS_FUNCTION) break;                                            \
+      *obj = *check_type(S, res, ELIS_PAIR);                                             \
+      elis_restore_gc(S, gc);                                                            \
+      S->calls = restore;                                                                \
+      return apply(S, obj, env, new_env);                                                \
+    }                                                                                    \
+    case ELIS_BUILTIN:                                                                   \
+      switch (BUILTIN(func)) {                                                           \
+        case LIST:                                                                       \
+          res = eval_list;                                                               \
+          break;                                                                         \
+        case CONS:                                                                       \
+          obj = eval_arg;                                                                \
+          res = elis_cons(S, obj, eval_arg);                                             \
+          break;                                                                         \
+        case CAR:                                                                        \
+          res = elis_car(S, eval_arg);                                                   \
+          break;                                                                         \
+        case CDR:                                                                        \
+          res = elis_cdr(S, eval_arg);                                                   \
+          break;                                                                         \
+        case SETCAR:                                                                     \
+          obj = eval_arg;                                                                \
+          elis_setcar(S, obj, eval_arg);                                                 \
+          break;                                                                         \
+        case SETCDR:                                                                     \
+          obj = eval_arg;                                                                \
+          elis_setcdr(S, obj, eval_arg);                                                 \
+          break;                                                                         \
+        case IF:                                                                         \
+          while (args != &nil) {                                                         \
+            obj = eval_arg;                                                              \
+            if (obj != &nil) {                                                           \
+              res = args == &nil ? obj : eval_arg;                                       \
+              break;                                                                     \
+            }                                                                            \
+            if (args == &nil) break;                                                     \
+            args = CDR(args);                                                            \
+          }                                                                              \
+          break;                                                                         \
+        case WHILE: {                                                                    \
+          int gc = elis_save_gc(S);                                                      \
+          obj = elis_next_arg(S, &args);                                                 \
+          while (eval(S, obj, env, NULL) != &nil) {                                      \
+            do_list(S, args, env);                                                       \
+            elis_restore_gc(S, gc);                                                      \
+          }                                                                              \
+          break;                                                                         \
+        }                                                                                \
+        case DO:                                                                         \
+          res = do_list(S, args, env);                                                   \
+          break;                                                                         \
+        case AND:                                                                        \
+          while (args != &nil && (res = eval_arg) != &nil);                              \
+          break;                                                                         \
+        case OR:                                                                         \
+          while (args != &nil && (res = eval_arg) == &nil);                              \
+          break;                                                                         \
+        case NOT:                                                                        \
+          res = elis_bool(S, eval_arg == &nil);                                          \
+          break;                                                                         \
+        case FUNC:                                                                       \
+        case MACRO:                                                                      \
+          res = make_object(S);                                                          \
+          SET_TYPE(res, BUILTIN(func) == FUNC ? ELIS_FUNCTION : ELIS_MACRO);             \
+          CDR(res) = elis_cons(S, env, args);                                            \
+          elis_next_arg(S, &args);                                                       \
+          break;                                                                         \
+        case QUOTE:                                                                      \
+          res = elis_next_arg(S, &args);                                                 \
+          break;                                                                         \
+        case GENSYM:                                                                     \
+          res = elis_symbol(S, NULL);                                                    \
+          break;                                                                         \
+        case PRINT:                                                                      \
+          while (args != &nil) {                                                         \
+            obj = eval_arg;                                                              \
+            if (TYPE(obj) != ELIS_STRING) {                                              \
+              elis_write_fp(S, obj, stdout);                                             \
+            } else {                                                                     \
+              printf("%s", STRING(obj));                                                 \
+            }                                                                            \
+            fputc(' ', stdout);                                                          \
+          }                                                                              \
+          printf("\n");                                                                  \
+          break;                                                                         \
+        case EVAL:                                                                       \
+          res = eval(S, eval_arg, env, new_env);                                         \
+          break;                                                                         \
+        case APPLY: {                                                                    \
+          elis_Object call;                                                              \
+          CAR(&call) = elis_next_arg(S, &args);                                          \
+          CDR(&call) = eval_arg;                                                         \
+          res = apply(S, &call, env, new_env);                                           \
+          break;                                                                         \
+        }                                                                                \
+        case SET:                                                                        \
+          do {                                                                           \
+            obj = elis_next_arg(S, &args), func = eval_arg;                              \
+            for (; TYPE(obj) == ELIS_PAIR; obj = CDR(obj), func = elis_cdr(S, func)) {   \
+              set(S, CAR(obj), elis_car(S, func), env);                                  \
+            }                                                                            \
+            if (obj != &nil) set(S, obj, func, env);                                     \
+          } while (args != &nil);                                                        \
+          break;                                                                         \
+        case LET:                                                                        \
+          if (!new_env) elis_error(S, "attempt to bind local in global scope");          \
+          do {                                                                           \
+            obj = elis_next_arg(S, &args);                                               \
+            env = bind(S, obj, eval_arg, env);                                           \
+          } while (args != &nil);                                                        \
+          *new_env = env;                                                                \
+          break;                                                                         \
+        case IS:                                                                         \
+          obj = eval_arg;                                                                \
+          res = elis_bool(S, elis_is(S, obj, eval_arg));                                 \
+          break;                                                                         \
+        case ATOM:                                                                       \
+          obj = eval_arg;                                                                \
+          res = elis_bool(S, TYPE(obj) != ELIS_PAIR);                                    \
+          break;                                                                         \
+        case LT:                                                                         \
+          COMPARE_OP(a < b, eval_arg);                                                   \
+          break;                                                                         \
+        case LTE:                                                                        \
+          COMPARE_OP(a <= b, eval_arg);                                                  \
+          break;                                                                         \
+        case ADD:                                                                        \
+          ARITH_OP(a + b, eval_arg);                                                     \
+          break;                                                                         \
+        case SUB:                                                                        \
+          ARITH_OP(a - b, eval_arg);                                                     \
+          break;                                                                         \
+        case MUL:                                                                        \
+          ARITH_OP(a * b, eval_arg);                                                     \
+          break;                                                                         \
+        case DIV:                                                                        \
+          ARITH_OP(a / b, eval_arg);                                                     \
+          break;                                                                         \
+        case MOD:                                                                        \
+          ARITH_OP(a - b * (long) (a / b), eval_arg);                                    \
+          break;                                                                         \
+        case IDIV:                                                                       \
+          ARITH_OP(b ? (long) (a / b) : (elis_error(S, "divide by zero"), 0), eval_arg); \
+          break;                                                                         \
+      }                                                                                  \
+      break;                                                                             \
+    case ELIS_CFUNCTION:                                                                 \
+      res = CFUNCTION(func)(S, eval_list);                                               \
+      break;                                                                             \
+    default:                                                                             \
+      elis_error(S, "tried to call non-callable value");                                 \
+  }                                                                                      \
+  /* restore previous call frame */                                                      \
+  elis_restore_gc(S, gc);                                                                \
+  elis_push_gc(S, res);                                                                  \
+  S->calls = restore;                                                                    \
+  return res;                                                                            \
+}
+
+static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env);
 
 static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env) {
+  elis_Object call;
   /* symbol evaluates to it's object */
   if (TYPE(obj) == ELIS_SYMBOL) return CDR(lookup(obj, env));
   /* other atoms evaluate to themselves */
   if (TYPE(obj) != ELIS_PAIR) return obj;
-  /* else, it's function call */
-  return apply(S, obj, env, new_env);
-}
-
-static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env) {
-  elis_Object call, *func, *args, *res, *local, *params;
-  int gc = elis_save_gc(S);
   /* create new call frame */
   CAR(&call) = obj;
   CDR(&call) = S->calls;
   S->calls = &call;
-  /* extract function and arguments */
-  func = eval(S, CAR(obj), env, NULL);
-  args = CDR(obj);
-  res = &nil;
-  /* allowed to call only functions, macros, builtins and cfunctions */
-  switch (TYPE(func)) {
-    case ELIS_FUNCTION:
-      local = CDR(func), params = CDR(local), args = eval_list(S, args, env);
-      res = do_list(S, CDR(params), bind_args(S, CAR(params), args, CAR(local)));
-      break;
-    case ELIS_MACRO:
-      local = CDR(func), params = CDR(local);
-      *obj = *do_list(S, CDR(params), bind_args(S, CAR(params), args, CAR(local)));
-      elis_restore_gc(S, gc);
-      S->calls = CDR(&call);
-      return eval(S, obj, env, NULL);
-    case ELIS_BUILTIN:
-      switch (BUILTIN(func)) {
-        case LIST:
-          res = eval_list(S, args, env);
-          break;
-        case CONS:
-          obj = EVAL_ARG();
-          res = elis_cons(S, obj, EVAL_ARG());
-          break;
-        case CAR:
-          res = elis_car(S, EVAL_ARG());
-          break;
-        case CDR:
-          res = elis_cdr(S, EVAL_ARG());
-          break;
-        case SETCAR:
-          obj = EVAL_ARG();
-          elis_setcar(S, obj, EVAL_ARG());
-          break;
-        case SETCDR:
-          obj = EVAL_ARG();
-          elis_setcdr(S, obj, EVAL_ARG());
-          break;
-        case IF:
-          while (args != &nil) {
-            obj = EVAL_ARG();
-            if (obj != &nil) {
-              res = args == &nil ? obj : EVAL_ARG();
-              break;
-            }
-            if (args == &nil) break;
-            args = CDR(args);
-          }
-          break;
-        case WHILE: {
-          int gc = elis_save_gc(S);
-          obj = elis_next_arg(S, &args);
-          while (eval(S, obj, env, NULL) != &nil) {
-            do_list(S, args, env);
-            elis_restore_gc(S, gc);
-          }
-          break;
-        }
-        case DO:
-          res = do_list(S, args, env);
-          break;
-        case AND:
-          while (args != &nil && (res = EVAL_ARG()) != &nil);
-          break;
-        case OR:
-          while (args != &nil && (res = EVAL_ARG()) == &nil);
-          break;
-        case NOT:
-          res = elis_bool(S, EVAL_ARG() == &nil);
-          break;
-        case FUNC:
-          res = make_object(S);
-          SET_TYPE(res, ELIS_FUNCTION);
-          CDR(res) = elis_cons(S, env, args);
-          break;
-        case MACRO:
-          res = make_object(S);
-          SET_TYPE(res, ELIS_MACRO);
-          CDR(res) = elis_cons(S, env, args);
-          break;
-        case QUOTE:
-          res = elis_next_arg(S, &args);
-          break;
-        case GENSYM:
-          res = elis_symbol(S, NULL);
-          break;
-        case PRINT:
-          while (args != &nil) {
-            obj = EVAL_ARG();
-            if (TYPE(obj) != ELIS_STRING) {
-              elis_write_fp(S, obj, stdout);
-            } else {
-              printf("%s", STRING(obj));
-            }
-            fputc(' ', stdout);
-          }
-          printf("\n");
-          break;
-        case EVAL:
-          res = eval(S, EVAL_ARG(), env, new_env);
-          break;
-        case APPLY: {
-          elis_Object call;
-          CAR(&call) = elis_next_arg(S, &args);
-          CDR(&call) = quote_list(S, EVAL_ARG());
-          res = apply(S, &call, env, new_env);
-          break;
-        }
-        case SET:
-          do {
-            obj = elis_next_arg(S, &args);
-            check_type(S, obj, ELIS_SYMBOL);
-            CDR(lookup(obj, env)) = EVAL_ARG();
-          } while (args != &nil);
-          break;
-        case LET:
-          if (!new_env) elis_error(S, "attempt to bind local in global scope");
-          do {
-            obj = elis_next_arg(S, &args);
-            check_type(S, obj, ELIS_SYMBOL);
-            *new_env = env = elis_cons(S, elis_cons(S, obj, EVAL_ARG()), env);
-          } while (args != &nil);
-          break;
-        case IS:
-          obj = EVAL_ARG();
-          res = S->t;
-          while (args != &nil && (res = elis_bool(S, elis_is(S, obj, EVAL_ARG()))) != &nil);
-          break;
-        case ATOM:
-          obj = EVAL_ARG();
-          res = elis_bool(S, TYPE(obj) != ELIS_PAIR);
-          break;
-        case LT:
-          COMPARE_OP(a < b);
-          break;
-        case LTE:
-          COMPARE_OP(a <= b);
-          break;
-        case ADD:
-          ARITH_OP(a + b);
-          break;
-        case SUB:
-          ARITH_OP(a - b);
-          break;
-        case MUL:
-          ARITH_OP(a * b);
-          break;
-        case DIV:
-          ARITH_OP(a / b);
-          break;
-        case MOD:
-          ARITH_OP(a - b * (long) (a / b));
-          break;
-        case IDIV:
-          ARITH_OP(b ? (long) (a / b) : (elis_error(S, "divide by zero"), 0));
-          break;
-      }
-      break;
-    case ELIS_CFUNCTION:
-      res = CFUNCTION(func)(S, eval_list(S, args, env));
-      break;
-    default:
-      elis_error(S, "tried to call non-callable value");
-  }
-  /* restore previous call frame */
-  elis_restore_gc(S, gc);
-  elis_push_gc(S, res);
-  S->calls = CDR(&call);
-  return res;
+  /* call function */
+  CALL(eval(S, elis_next_arg(S, &args), env, NULL), eval_list(S, args, env), CDR(&call));
+}
+
+static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env) {
+  /* function call like in `eval`, but call frame isn't created and arguments isn't evaluated */
+  CALL(elis_next_arg(S, &args), args, S->calls);
 }
 
 elis_Object *elis_eval(elis_State *S, elis_Object *obj) {
@@ -853,7 +837,7 @@ elis_Object *elis_eval(elis_State *S, elis_Object *obj) {
 elis_Object *elis_apply(elis_State *S, elis_Object *func, elis_Object *args) {
   elis_Object call;
   CAR(&call) = func;
-  CDR(&call) = quote_list(S, args);
+  CDR(&call) = args;
   return apply(S, &call, &nil, NULL);
 }
 
@@ -868,18 +852,15 @@ elis_Object *elis_next_arg(elis_State *S, elis_Object **args) {
 }
 
 void elis_set(elis_State *S, elis_Object *sym, elis_Object *obj) {
-  check_type(S, sym, ELIS_SYMBOL);
-  CDR(CDR(sym)) = obj;
+  CDR(CDR(check_type(S, sym, ELIS_SYMBOL))) = obj;
 }
 
 void elis_setcar(elis_State *S, elis_Object *obj, elis_Object *val) {
-  check_type(S, obj, ELIS_PAIR);
-  CAR(obj) = val;
+  CAR(check_type(S, obj, ELIS_PAIR)) = val;
 }
 
 void elis_setcdr(elis_State *S, elis_Object *obj, elis_Object *val) {
-  check_type(S, obj, ELIS_PAIR);
-  CDR(obj) = val;
+  CDR(check_type(S, obj, ELIS_PAIR)) = val;
 }
 
 #ifdef ELIS_TESTBED

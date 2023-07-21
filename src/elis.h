@@ -9,6 +9,8 @@
 
 #include <stdio.h>
 
+#define ELIS_VERSION "1.0"
+
 #ifndef ELIS_STACK_SIZE
 #define ELIS_STACK_SIZE 256
 #endif
