@@ -1,0 +1,29 @@
+(= each (func (lst func)
+  (while lst
+    (func (car lst))
+    (= lst (cdr lst))
+  )
+))
+
+(do
+  (let gen-vec-op (macro (name op)
+    (list '= name (list 'func '(a b)
+      '(let (ax . ay) a (bx . by) b)
+      (list 'cons
+        (list op 'ax 'bx)
+        (list op 'ay 'by)
+      )
+    ))
+  ))
+  (each '((v+ +) (v- -) (v* *) (v/ /)) (func (x)
+    (apply gen-vec-op x)
+  ))
+)
+
+(= pos (cons 5 6)
+   vel (cons 1 2)
+)
+
+(print "position:   " pos)
+(print "velocity:   " vel)
+(print "destination:" (v+ pos vel))

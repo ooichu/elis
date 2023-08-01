@@ -179,6 +179,7 @@ elis_State *elis_init(elis_Allocator alloc, void *udata) {
 
 void elis_free(elis_State *S) {
   elis_Object *page, *next;
+  if (!S) return;
   /* reset roots and collect garbage */
   S->stack_idx = 0;
   S->symbols = &nil;
