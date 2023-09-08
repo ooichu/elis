@@ -28,13 +28,13 @@ struct elis_Object {
     elis_CFunction f;
     elis_Number n;
     struct { void *p; elis_Handlers *h; } *u;
-    char *s, t[sizeof(void*)];
+    char *s, t[sizeof(void *)];
   } car, cdr;
 };
 
 static const union { size_t u; char c; } endian = { 0x1 };
 
-#define TAG(x)       ((x)->car.t[!endian.c * (sizeof(void*) - 1)])
+#define TAG(x)       ((x)->car.t[!endian.c * (sizeof(void *) - 1)])
 #define CAR(x)       ((x)->car.o)
 #define CDR(x)       ((x)->cdr.o)
 #define NUMBER(x)    ((x)->cdr.n)
@@ -50,7 +50,7 @@ static const union { size_t u; char c; } endian = { 0x1 };
 #define MARK(x)        (TAG(x) |= 0x2)
 #define UNMARK(x)      (TAG(x) &= ~0x2)
 
-static elis_Object nil = { { (elis_Object*) ((ELIS_NIL << 2) | 0x1) }, { NULL } };
+static elis_Object nil = { { (elis_Object *) ((ELIS_NIL << 2) | 0x1) }, { NULL } };
 
 const char *const elis_typenames[] = {
   "pair", "nil", "number", "string", "symbol", "function", "macro", "builtin", "cfunction",
@@ -76,11 +76,19 @@ struct elis_State {
   void *userdata;
 };
 
+static void *check_for_memout(void *ptr) {
+  if (!ptr) {
+    fputs("error: memory out\n", stderr);
+    exit(EXIT_FAILURE);
+  }
+  return ptr;
+}
+
 static void *allocator(void *ptr, size_t size, void *udata) {
   (void) udata;
   /* due standard, we can't rely on `realloc()` behavior with zero `ptr` or `size` */
-  if (!ptr) return malloc(size);
-  if (size) return realloc(ptr, size);
+  if (!ptr) return check_for_memout(malloc(size));
+  if (size) return check_for_memout(realloc(ptr, size));
   free(ptr);
   return NULL;
 }
@@ -131,7 +139,7 @@ static elis_Object *make_object(elis_State *S) {
     collect_garbage(S);
     /* allocate new page if free objects still not found */
     if (S->free == &nil) {
-      elis_Object *page = (elis_Object*) ALLOCATE(NULL, ELIS_PAGE_SIZE * sizeof(elis_Object));
+      elis_Object *page = (elis_Object *) ALLOCATE(NULL, ELIS_PAGE_SIZE * sizeof(elis_Object));
       /* add new page to page list */
       CDR(page) = S->pages;
       S->pages = page;
@@ -153,7 +161,7 @@ elis_State *elis_init(elis_Allocator alloc, void *udata) {
   /* use default allocator if custom allocator not provided */
   if (!alloc) alloc = allocator;
   /* allocate state and bind allocator */
-  S = (elis_State*) alloc(NULL, sizeof(*S), udata);
+  S = (elis_State *) alloc(NULL, sizeof(*S), udata);
   memset(S, 0, sizeof(*S));
   S->allocator = alloc;
   S->userdata = udata;
@@ -201,7 +209,7 @@ elis_Error elis_on_error(elis_State *S, elis_Error func) {
 #define BACKTRACE_LINE_MAX 64
 
 static void trace(elis_State *S, void *udata, char chr) {
-  unsigned *i = (unsigned*) udata;
+  unsigned *i = (unsigned *) udata;
   (void) S;
   /* limit trace line to `BACKTRACE_LINE_MAX` characters */
   if (*i < BACKTRACE_LINE_MAX) {
@@ -292,7 +300,7 @@ elis_Object *elis_string(elis_State *S, const char *str) {
 elis_Object *elis_substring(elis_State *S, const char *str, size_t len) {
   elis_Object *obj = make_object(S);
   SET_TYPE(obj, ELIS_STRING);
-  STRING(obj) = (char*) ALLOCATE(NULL, len + 1);
+  STRING(obj) = (char *) ALLOCATE(NULL, len + 1);
   memcpy(STRING(obj), str, len);
   STRING(obj)[len] = '\0';
   return obj;
@@ -330,7 +338,7 @@ static elis_Handlers empty_handlers = { NULL, NULL };
 elis_Object *elis_userdata(elis_State *S, void *udata, elis_Handlers *hdls) {
   elis_Object *obj = make_object(S);
   SET_TYPE(obj, ELIS_USERDATA);
-  CDR(obj) = (elis_Object*) ALLOCATE(NULL, sizeof(*obj->cdr.u));
+  CDR(obj) = (elis_Object *) ALLOCATE(NULL, sizeof(*obj->cdr.u));
   USERDATA(obj) = udata;
   HANDLERS(obj) = hdls ? hdls : &empty_handlers;
   return obj;
@@ -393,7 +401,7 @@ const char *elis_to_string(elis_State *S, elis_Object *obj) {
   return STRING(check_type(S, obj, ELIS_STRING));
 }
 
-#define END_OF_SEXPR ((elis_Object*) 1)
+#define END_OF_SEXPR ((elis_Object *) 1)
 
 static elis_Object *read_object(elis_State *S, elis_Reader func, void *udata) {
   char buf[64];
@@ -437,14 +445,14 @@ static elis_Object *read_object(elis_State *S, elis_Reader func, void *udata) {
     }
     case '"': {
       size_t len = 0, size = sizeof(buf);
-      char *str = (char*) ALLOCATE(NULL, size);
+      char *str = (char *) ALLOCATE(NULL, size);
       /* collect string */
       while ((chr = func(S, udata)) != '"') {
         if (chr == '\0') elis_error(S, "unclosed string");
         /* need to stretch buffer? */
         if (len == size) {
           size <<= 1;
-          str = (char*) ALLOCATE(str, size + 1);
+          str = (char *) ALLOCATE(str, size + 1);
         }
         /* is escape sequence? */
         if (chr == '\\') {
@@ -455,7 +463,7 @@ static elis_Object *read_object(elis_State *S, elis_Reader func, void *udata) {
       }
       /* terminate string and compact buffer */
       str[len] = '\0';
-      str = (char*) ALLOCATE(str, len + 1);
+      str = (char *) ALLOCATE(str, len + 1);
       /* create string object */
       obj = make_object(S);
       SET_TYPE(obj, ELIS_STRING);
@@ -492,7 +500,7 @@ elis_Object *elis_read(elis_State *S, elis_Reader read, void *udata) {
 }
 
 static char read_fp(elis_State *S, void *udata) {
-  int chr = fgetc((FILE*) udata);
+  int chr = fgetc((FILE *) udata);
   (void) S;
   return chr == EOF ? '\0' : chr;
 }
@@ -554,7 +562,7 @@ static void write_object(elis_State *S, elis_Object *obj, elis_Writer func, void
       }
       /* fall through */
     default:
-      sprintf(buf, "[%s %p]", elis_typenames[TYPE(obj)], (void*) obj);
+      sprintf(buf, "[%s %p]", elis_typenames[TYPE(obj)], (void *) obj);
       write_string(S, func, udata, buf);
       break;
   }
@@ -574,7 +582,7 @@ void elis_write(elis_State *S, elis_Object *obj, elis_Writer func, void *udata) 
 
 static void write_fp(elis_State *S, void *udata, char chr) {
   (void) S;
-  fputc(chr, (FILE*) udata);
+  fputc(chr, (FILE *) udata);
 }
 
 void elis_write_fp(elis_State *S, elis_Object *obj, FILE *fp) {
