@@ -1,0 +1,47 @@
+(do
+  (let generate (func (lst macro)
+    (while lst
+      (apply macro (car lst))
+      (= lst (cdr lst))
+    )
+  ))
+
+  ; generate vector-vector operations
+  (generate '((2+ +) (2- -)) (macro (name op)
+    (list '= name (list 'func '(a b)
+      '(let (ax . ay) a
+            (bx . by) b
+       )
+      (list 'cons
+        (list op 'ax 'bx)
+        (list op 'ay 'by)
+      )
+    ))
+  ))
+
+  ; generate vector-scalar operations
+  (generate '((2* *) (2/ /)) (macro (name op)
+    (list '= name (list 'func '(v n)
+      '(let (vx . vy) v)
+      (list 'cons
+        (list op 'vx 'n)
+        (list op 'vy 'n)
+      )
+    ))
+  ))
+)
+
+(= pos (cons 5 6)
+   vel (cons 1 2)
+)
+
+(print "position:" pos)
+(print "velocity:" vel)
+
+(do
+  (let i 1)
+  (while (<= i 10)
+    (print "destination after" i "frames:" (2+ pos (2* vel i)))
+    (= i (+ i 1))
+  )
+)

@@ -5,13 +5,9 @@
 
 (= class (macro body
   (list 'func 'args
-    ; declare `self` and `super`
-    '(let self nil super nil)
-    ; put class definition
+    '(let (super . self) nil)
     (cons 'let body)
-    ; instance initialization
     '(do
-      ; define `self` dispatcher
       (= self (func (method . args)
         (let local (eval method))
         (if local
@@ -19,33 +15,42 @@
           (apply super (cons method args))
         )
       ))
-      ; call `init` constructor
       (apply init args)
-      ; return `self` dispatcher
       self
     )
   )
 ))
 
+(= getter (macro (field)
+  (list 'func () field)
+))
+
+(= setter (macro (field)
+  (let sym (gensym))
+  (list 'func (list sym) (list '= field sym))
+))
+
 ;
-; Example
+; Person class
 ;
 
 (= Person (class
-  :name "unknown"
-  :get-name (func (name) :name)
-  init (func (name)
-    (= :name name)
-  )
-  :greet (func () 
-    (print "Hello, my name is" :name)
-  )
+  :name     "unknown"
+  :get-name (getter :name)
+  :greet    (func () (print "Hello, my name is" :name))
+  init      (setter :name)
 ))
+
+;
+; Employee class
+;
 
 (= Employee (class
   :post "none"
   init (func (name post)
-    (= super (Person name) :post post)
+    (= super (Person name)
+       :post post
+    )
   )
   :greet (func ()
     (super':greet)
@@ -56,6 +61,10 @@
   )
 ))
 
+;
+; Example
+;
+
 (= man1 (Employee "Rayan" "programmer")
    man2 (Person   "Nicolas")
 )
@@ -64,4 +73,4 @@
 (man1':work)
 
 (man2':greet)
-(man2':work) ; here you got an error
+(man2':work) ; here you got an error 
