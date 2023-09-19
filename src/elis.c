@@ -69,8 +69,10 @@ static const char *const builtins[] = {
 };
 
 struct elis_State {
-  int stack_idx, next_char;
-  elis_Object *calls, *free, *pages, *symbols, *t, *quote, *stack[ELIS_STACK_SIZE];
+  int gc_stack_idx, next_char;
+  elis_Object *calls, *free, *pages, *symbols, *t, *quote, *gc_stack[ELIS_STACK_SIZE];
+  unsigned mark_stack_size;
+  elis_Object **mark_stack;
   elis_Allocator allocator;
   elis_Error error;
   void *userdata;
@@ -105,7 +107,7 @@ static void collect_garbage(elis_State *S) {
   int i;
   elis_Object *page;
   /* mark roots */
-  for (i = 0; i < S->stack_idx; ++i) elis_mark(S, S->stack[i]);
+  for (i = 0; i < S->gc_stack_idx; ++i) elis_mark(S, S->gc_stack[i]);
   elis_mark(S, S->symbols);
   /* sweep all pages */
   for (page = S->pages; page != &nil; page = CDR(page)) {
@@ -155,6 +157,8 @@ static elis_Object *make_object(elis_State *S) {
   return obj;
 }
 
+#define MARK_STACK_INIT 256
+
 elis_State *elis_init(elis_Allocator alloc, void *udata) {
   size_t i;
   elis_State *S;
@@ -165,6 +169,9 @@ elis_State *elis_init(elis_Allocator alloc, void *udata) {
   memset(S, 0, sizeof(*S));
   S->allocator = alloc;
   S->userdata = udata;
+  /* allocate mark stack */
+  S->mark_stack_size = MARK_STACK_INIT;
+  S->mark_stack = ALLOCATE(NULL, S->mark_stack_size * sizeof(*S->mark_stack));
   /* init internal lists */
   S->pages = &nil;
   S->calls = &nil;
@@ -189,7 +196,7 @@ void elis_free(elis_State *S) {
   elis_Object *page, *next;
   if (!S) return;
   /* reset roots and collect garbage */
-  S->stack_idx = 0;
+  S->gc_stack_idx = 0;
   S->symbols = &nil;
   collect_garbage(S);
   /* free all pages and state */
@@ -197,6 +204,7 @@ void elis_free(elis_State *S) {
     next = CDR(page);
     ALLOCATE(page, 0);
   }
+  ALLOCATE(S->mark_stack, 0);
   ALLOCATE(S, 0);
 }
 
@@ -236,36 +244,49 @@ void elis_error(elis_State *S, const char *msg) {
 }
 
 void elis_push_gc(elis_State *S, elis_Object *obj) {
-  if (S->stack_idx == ELIS_STACK_SIZE) elis_error(S, "stack overflow");
-  S->stack[S->stack_idx++] = obj;
+  if (S->gc_stack_idx == ELIS_STACK_SIZE) elis_error(S, "stack overflow");
+  S->gc_stack[S->gc_stack_idx++] = obj;
 }
 
 void elis_restore_gc(elis_State *S, int idx) {
-  S->stack_idx = idx;
+  S->gc_stack_idx = idx;
 }
 
 int elis_save_gc(elis_State *S) {
-  return S->stack_idx;
+  return S->gc_stack_idx;
+}
+
+static void push_mark_stack(elis_State *S, elis_Object *obj, unsigned *i) {
+  if (S->mark_stack_size == *i) {
+    S->mark_stack_size <<= 1;
+    S->mark_stack = ALLOCATE(S->mark_stack, S->mark_stack_size * sizeof(elis_Object *));
+  }
+  S->mark_stack[(*i)++] = obj;
 }
 
 void elis_mark(elis_State *S, elis_Object *obj) {
-  elis_Object *tmp;
+  unsigned i = 0;
 restart:
-  if (MARKED(obj)) return;
-  tmp = CAR(obj);
-  MARK(obj);
-  switch (TYPE(obj)) {
-    case ELIS_PAIR:
-      elis_mark(S, tmp);
-      /* fall through */
-    case ELIS_SYMBOL:
-    case ELIS_FUNCTION:
-    case ELIS_MACRO:
-      obj = CDR(obj);
-      goto restart; 
-    case ELIS_USERDATA:
-      if (HANDLERS(obj)->mark) HANDLERS(obj)->mark(S, obj);
-      break;
+  if (!MARKED(obj)) {
+    elis_Object *tmp = CAR(obj);
+    MARK(obj);
+    switch (TYPE(obj)) {
+      case ELIS_PAIR:
+        push_mark_stack(S, tmp, &i);
+        /* fall through */
+      case ELIS_SYMBOL:
+      case ELIS_FUNCTION:
+      case ELIS_MACRO:
+        obj = CDR(obj);
+        goto restart;
+      case ELIS_USERDATA:
+        if (HANDLERS(obj)->mark) HANDLERS(obj)->mark(S, obj);
+        break;
+    }
+  }
+  if (i != 0) {
+    obj = S->mark_stack[--i];
+    goto restart;
   }
 }
 
