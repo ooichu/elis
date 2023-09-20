@@ -71,7 +71,7 @@ static const char *const builtins[] = {
 struct elis_State {
   int gc_stack_idx, next_char;
   elis_Object *calls, *free, *pages, *symbols, *t, *quote, *gc_stack[ELIS_STACK_SIZE];
-  unsigned mark_stack_size;
+  size_t mark_stack_size;
   elis_Object **mark_stack;
   elis_Allocator allocator;
   elis_Error error;
@@ -256,7 +256,7 @@ int elis_save_gc(elis_State *S) {
   return S->gc_stack_idx;
 }
 
-static void push_mark_stack(elis_State *S, elis_Object *obj, unsigned *i) {
+static void push_mark_stack(elis_State *S, elis_Object *obj, size_t *i) {
   if (S->mark_stack_size == *i) {
     S->mark_stack_size <<= 1;
     S->mark_stack = ALLOCATE(S->mark_stack, S->mark_stack_size * sizeof(elis_Object *));
@@ -265,7 +265,7 @@ static void push_mark_stack(elis_State *S, elis_Object *obj, unsigned *i) {
 }
 
 void elis_mark(elis_State *S, elis_Object *obj) {
-  unsigned i = 0;
+  size_t i = 0;
 restart:
   if (!MARKED(obj)) {
     elis_Object *tmp = CAR(obj);
