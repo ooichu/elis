@@ -141,7 +141,7 @@ static elis_Object *make_object(elis_State *S) {
     collect_garbage(S);
     /* allocate new page if free objects still not found */
     if (S->free == &nil) {
-      elis_Object *page = (elis_Object *) ALLOCATE(NULL, ELIS_PAGE_SIZE * sizeof(elis_Object));
+      elis_Object *page = (elis_Object *) ALLOCATE(NULL, ELIS_PAGE_SIZE * sizeof(*page));
       /* add new page to page list */
       CDR(page) = S->pages;
       S->pages = page;
@@ -171,7 +171,7 @@ elis_State *elis_init(elis_Allocator alloc, void *udata) {
   S->userdata = udata;
   /* allocate mark stack */
   S->mark_stack_size = MARK_STACK_INIT;
-  S->mark_stack = ALLOCATE(NULL, S->mark_stack_size * sizeof(*S->mark_stack));
+  S->mark_stack = (elis_Object **) ALLOCATE(NULL, S->mark_stack_size * sizeof(*S->mark_stack));
   /* init internal lists */
   S->pages = &nil;
   S->calls = &nil;
@@ -259,7 +259,7 @@ int elis_save_gc(elis_State *S) {
 static void push_mark_stack(elis_State *S, elis_Object *obj, size_t *i) {
   if (S->mark_stack_size == *i) {
     S->mark_stack_size <<= 1;
-    S->mark_stack = ALLOCATE(S->mark_stack, S->mark_stack_size * sizeof(elis_Object *));
+    S->mark_stack = (elis_Object **) ALLOCATE(S->mark_stack, S->mark_stack_size * sizeof(*S->mark_stack));
   }
   S->mark_stack[(*i)++] = obj;
 }
