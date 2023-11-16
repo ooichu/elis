@@ -1,6 +1,7 @@
 # elis
 Embeddable Lisp-like programming language written in ANSI C.
 
+## Overview
 Basically, it's [fe](https://github.com/rxi/fe) with some improvements that conflict with original design.
 
 What's new:
@@ -14,3 +15,6 @@ What's new:
 * implementation is fully compatible with C++
 * compile-time configuration options: `ELIS_STACK_SIZE`, `ELIS_NUMBER_TYPE` and other
 * some fixes and little improvements
+
+## License
+This library is free software; you can redistribute it and/or modify it under the terms of the MIT license. See [LICENSE](LICENSE) for details.

@@ -1,4 +1,7 @@
 /*
+ * Inspired by (and based on) rxi's fe language: https://github.com/rxi/fe.
+ * 
+ * Copyright (c) 2020 rxi
  * Copyright (c) 2023 ooichu
  *
  * This software may be used free of charge under the MIT license, see `elis.c` for details.
