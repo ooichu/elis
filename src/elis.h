@@ -1,10 +1,11 @@
 /*
  * Inspired by (and based on) rxi's fe language: https://github.com/rxi/fe.
- * 
+ *
  * Copyright (c) 2020 rxi
  * Copyright (c) 2023 ooichu
  *
- * This software may be used free of charge under the MIT license, see `elis.c` for details.
+ * This software may be used free of charge under the MIT license, see "elis.c"
+ * for details.
  */
 
 #ifndef ELIS_H
@@ -89,15 +90,15 @@ elis_Object *elis_string(elis_State *S, const char *str);
 elis_Object *elis_substring(elis_State *S, const char *str, size_t len);
 elis_Object *elis_symbol(elis_State *S, const char *name);
 elis_Object *elis_cfunction(elis_State *S, elis_CFunction func);
-elis_Object *elis_userdata(elis_State *S, void *udata, elis_Handlers *hdlrs);
+elis_Object *elis_userdata(elis_State *S, void *udata, elis_Handlers *hdls);
 
 /*
  * Object accessors
  */
 
 enum {
-  ELIS_PAIR, ELIS_NIL, ELIS_NUMBER, ELIS_STRING, ELIS_SYMBOL, ELIS_FUNCTION, ELIS_MACRO,
-  ELIS_BUILTIN, ELIS_CFUNCTION, ELIS_USERDATA, ELIS_FREE
+  ELIS_PAIR, ELIS_NIL, ELIS_NUMBER, ELIS_STRING, ELIS_SYMBOL, ELIS_FUNCTION,
+  ELIS_MACRO, ELIS_BUILTIN, ELIS_CFUNCTION, ELIS_USERDATA, ELIS_FREE
 };
 
 extern const char *const elis_typenames[];
@@ -107,7 +108,7 @@ int elis_type(elis_State *S, elis_Object *obj);
 int elis_is(elis_State *S, elis_Object *a, elis_Object *b);
 elis_Object *elis_car(elis_State *S, elis_Object *obj);
 elis_Object *elis_cdr(elis_State *S, elis_Object *obj);
-void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_Handlers **hdlrs);
+void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_Handlers **hdls);
 elis_Number elis_to_number(elis_State *S, elis_Object *obj);
 const char *elis_to_string(elis_State *S, elis_Object *obj);
 
