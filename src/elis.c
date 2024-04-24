@@ -25,26 +25,26 @@
 
 #include "elis.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MARK_STACK_INIT 256
-#define BACKTRACE_LINE_MAX 64
+#define BACKTRACE_LIMIT 64
 
 struct elis_Object {
   union {
-    size_t w;
     elis_Object *o;
     elis_CFunction f;
     elis_Number n;
-    struct { void *p; elis_Handlers *h; } *u;
+    struct { void *p; elis_GCHooks *h; } *u;
     char *s, t[sizeof(void *)];
   } car, cdr;
 };
 
-static const union { size_t w; char c; } endian = { 0x1 };
+static const union { size_t size; unsigned char byte; } endian = { 0x1 };
 
-#define TAG(x)         ((x)->car.t[!endian.c * (sizeof(void *) - 1)])
+#define TAG(x)         ((x)->car.t[!endian.byte * (sizeof(void *) - 1)])
 #define CAR(x)         ((x)->car.o)
 #define CDR(x)         ((x)->cdr.o)
 #define NUMBER(x)      ((x)->cdr.n)
@@ -52,7 +52,7 @@ static const union { size_t w; char c; } endian = { 0x1 };
 #define STRING(x)      ((x)->cdr.s)
 #define BUILTIN(x)     ((x)->cdr.t[0])
 #define USERDATA(x)    ((x)->cdr.u->p)
-#define HANDLERS(x)    ((x)->cdr.u->h)
+#define GCHOOKS(x)     ((x)->cdr.u->h)
 
 #define TYPE(x)        (TAG(x) & 0x1 ? TAG(x) >> 2 : ELIS_PAIR)
 #define SET_TYPE(x, t) (TAG(x) = ((t) << 2) | 0x1)
@@ -60,11 +60,11 @@ static const union { size_t w; char c; } endian = { 0x1 };
 #define MARK(x)        (TAG(x) |= 0x2)
 #define UNMARK(x)      (TAG(x) &= ~0x2)
 
-static elis_Object nil = { { (ELIS_NIL << 2) | 0x1 }, { 0 } };
+static elis_Object nil = { { (elis_Object *) ((ELIS_NIL << 2) | 0x1) }, { NULL } };
 
 const char *const elis_typenames[] = {
-  "pair", "nil", "number", "string", "symbol", "function", "macro",
-  "builtin", "cfunction", "userdata", "free"
+  "pair", "nil", "number", "string", "symbol", "function", "macro", "builtin",
+  "cfunction", "userdata", "free"
 };
 
 enum {
@@ -92,8 +92,8 @@ struct elis_State {
   size_t mark_stack_size;
   elis_Object **mark_stack;
   elis_Allocator allocator;
-  elis_Error error;
   void *userdata;
+  elis_OnError on_error;
 };
 
 static void *check_for_memout(void *ptr) {
@@ -142,7 +142,7 @@ static void collect_garbage(elis_State *S) {
       if (TYPE(obj) == ELIS_STRING) {
         ALLOCATE(STRING(obj), 0);
       } else if (TYPE(obj) == ELIS_USERDATA) {
-        if (HANDLERS(obj)->free) HANDLERS(obj)->free(S, obj);
+        if (GCHOOKS(obj)->free) GCHOOKS(obj)->free(S, obj);
         ALLOCATE(CDR(obj), 0);
       }
 
@@ -237,19 +237,17 @@ void elis_free(elis_State *S) {
   }
 }
 
-elis_Error elis_on_error(elis_State *S, elis_Error func) {
-  elis_Error error = S->error;
-  S->error = func;
-  return error;
+elis_OnError *elis_on_error(elis_State *S) {
+  return &S->on_error;
 }
 
 static void trace(elis_State *S, void *udata, char chr) {
   int *i = (int *) udata;
   (void) S;
   /* limit output line to make backtrace pretty */
-  if (*i < BACKTRACE_LINE_MAX) {
+  if (*i < BACKTRACE_LIMIT) {
     fputc(chr, stderr);
-    if (chr != '\0' && ++(*i) == BACKTRACE_LINE_MAX) fputs("...", stderr);
+    if (chr != '\0' && ++(*i) == BACKTRACE_LIMIT) fputs("...", stderr);
   }
 }
 
@@ -257,7 +255,8 @@ void elis_error(elis_State *S, const char *msg) {
   elis_Object *lst = S->calls;
   S->calls = &nil;
 
-  if (S->error) S->error(S, msg, lst);
+  if (S->on_error.callback)
+    S->on_error.callback(S, msg, lst, S->on_error.userdata);
 
   fprintf(stderr, "error: %s\n", msg);
   for (; lst != &nil; lst = CDR(lst)) {
@@ -303,7 +302,7 @@ restart:
         goto restart;
 
       case ELIS_USERDATA:
-        if (HANDLERS(obj)->mark) HANDLERS(obj)->mark(S, obj);
+        if (GCHOOKS(obj)->mark) GCHOOKS(obj)->mark(S, obj);
         break;
     }
   }
@@ -359,9 +358,8 @@ elis_Object *elis_symbol(elis_State *S, const char *name) {
     CDR(obj) = elis_cons(S, &nil, &nil);
   } else {
     /* try to find symbol with same name */
-    for (obj = S->symbols; obj != &nil; obj = CDR(obj)) {
+    for (obj = S->symbols; obj != &nil; obj = CDR(obj))
       if (!strcmp(STRING(CAR(CDR(CAR(obj)))), name)) return CAR(obj);
-    }
 
     obj = make_object(S);
     CDR(obj) = elis_cons(S, elis_string(S, name), &nil);
@@ -379,14 +377,14 @@ elis_Object *elis_cfunction(elis_State *S, elis_CFunction func) {
   return obj;
 }
 
-static elis_Handlers empty_handlers = { NULL, NULL };
+static elis_GCHooks no_hooks = { NULL, NULL };
 
-elis_Object *elis_userdata(elis_State *S, void *udata, elis_Handlers *hdls) {
+elis_Object *elis_userdata(elis_State *S, void *udata, elis_GCHooks *hooks) {
   elis_Object *obj = make_object(S);
   SET_TYPE(obj, ELIS_USERDATA);
   CDR(obj) = (elis_Object *) ALLOCATE(NULL, sizeof(*obj->cdr.u));
   USERDATA(obj) = udata;
-  HANDLERS(obj) = hdls ? hdls : &empty_handlers;
+  GCHOOKS(obj) = hooks ? hooks : &no_hooks;
   return obj;
 }
 
@@ -430,9 +428,9 @@ elis_Object *elis_cdr(elis_State *S, elis_Object *obj) {
   return CDR(check_type(S, obj, ELIS_PAIR));
 }
 
-void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_Handlers **hdls) {
+void *elis_to_userdata(elis_State *S, elis_Object *obj, elis_GCHooks **hooks) {
   check_type(S, obj, ELIS_USERDATA);
-  if (hdls) *hdls = HANDLERS(obj) == &empty_handlers ? NULL : HANDLERS(obj);
+  if (hooks) *hooks = GCHOOKS(obj) == &no_hooks ? NULL : GCHOOKS(obj);
   return USERDATA(obj);
 }
 
@@ -446,6 +444,18 @@ const char *elis_to_string(elis_State *S, elis_Object *obj) {
     if (obj == &nil) return "";
   }
   return STRING(check_type(S, obj, ELIS_STRING));
+}
+
+void elis_set(elis_State *S, elis_Object *sym, elis_Object *val) {
+  CDR(CDR(check_type(S, sym, ELIS_SYMBOL))) = val;
+}
+
+void elis_set_car(elis_State *S, elis_Object *obj, elis_Object *val) {
+  CAR(check_type(S, obj, ELIS_PAIR)) = val;
+}
+
+void elis_set_cdr(elis_State *S, elis_Object *obj, elis_Object *val) {
+  CDR(check_type(S, obj, ELIS_PAIR)) = val;
 }
 
 #define END_OF_SEXPR ((elis_Object *) 1)
@@ -566,13 +576,15 @@ elis_Object *elis_read_fp(elis_State *S, FILE *fp) {
   return elis_read(S, read_fp, fp);
 }
 
-static void write_string(elis_State *S, elis_Writer func, void *udata,
-                         const char *str) {
-  while (*str != '\0') func(S, udata, *str++);
+static void write_string(elis_State *S, elis_Writer func, void *udata, const char *str) {
+  while (*str != '\0') {
+    char chr = *str++;
+    if (chr == '"') func(S, udata, '\\');
+    func(S, udata, chr);
+  }
 }
 
-static void write_object(elis_State *S, elis_Object *obj, elis_Writer func,
-                         void *udata) {
+static void write_object(elis_State *S, elis_Object *obj, elis_Writer func, void *udata) {
   char buf[32];
 
   switch (TYPE(obj)) {
@@ -643,8 +655,7 @@ static void unmark_pairs(elis_Object *obj) {
   }
 }
 
-void elis_write(elis_State *S, elis_Object *obj, elis_Writer func,
-                void *udata) {
+void elis_write(elis_State *S, elis_Object *obj, elis_Writer func, void *udata) {
   write_object(S, obj, func, udata);
   unmark_pairs(obj);
 }
@@ -666,11 +677,9 @@ static elis_Object *lookup(elis_Object *sym, elis_Object *env) {
   return CDR(sym);
 }
 
-static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env,
-                         elis_Object **new_env);
+static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env);
 
-static elis_Object *eval_list(elis_State *S, elis_Object *lst,
-                              elis_Object *env) {
+static elis_Object *eval_list(elis_State *S, elis_Object *lst, elis_Object *env) {
   elis_Object *res = &nil;
   elis_Object **tail = &res;
   while (lst != &nil) {
@@ -692,8 +701,7 @@ static elis_Object *do_list(elis_State *S, elis_Object *lst, elis_Object *env) {
   return res;
 }
 
-static elis_Object *bind(elis_State *S, elis_Object *param, elis_Object *args,
-                         elis_Object *env) {
+static elis_Object *bind(elis_State *S, elis_Object *param, elis_Object *args, elis_Object *env) {
   while (TYPE(param) == ELIS_PAIR) {
     env = elis_cons(S, elis_cons(S, CAR(param), elis_car(S, args)), env);
     param = CDR(param);
@@ -703,8 +711,7 @@ static elis_Object *bind(elis_State *S, elis_Object *param, elis_Object *args,
   return param == &nil ? env : elis_cons(S, elis_cons(S, param, args), env);
 }
 
-static void set(elis_State *S, elis_Object *sym, elis_Object *val,
-                elis_Object *env) {
+static void set(elis_State *S, elis_Object *sym, elis_Object *val, elis_Object *env) {
   CDR(lookup(check_type(S, sym, ELIS_SYMBOL), env)) = val;
 }
 
@@ -785,6 +792,7 @@ static void set(elis_State *S, elis_Object *sym, elis_Object *val,
               res = args == &nil ? obj : eval_arg;                             \
               break;                                                           \
             }                                                                  \
+                                                                               \
             if (args == &nil) break;                                           \
             args = CDR(args);                                                  \
           }                                                                    \
@@ -812,12 +820,12 @@ static void set(elis_State *S, elis_Object *sym, elis_Object *val,
                                                                                \
         case SETCAR:                                                           \
           obj = eval_arg;                                                      \
-          elis_setcar(S, obj, eval_arg);                                       \
+          elis_set_car(S, obj, eval_arg);                                      \
           break;                                                               \
                                                                                \
         case SETCDR:                                                           \
           obj = eval_arg;                                                      \
-          elis_setcdr(S, obj, eval_arg);                                       \
+          elis_set_cdr(S, obj, eval_arg);                                      \
           break;                                                               \
                                                                                \
         case AND:                                                              \
@@ -878,11 +886,11 @@ static void set(elis_State *S, elis_Object *sym, elis_Object *val,
         case PRINT:                                                            \
           while (args != &nil) {                                               \
             obj = eval_arg;                                                    \
-            if (TYPE(obj) != ELIS_STRING) {                                    \
+            if (TYPE(obj) != ELIS_STRING)                                      \
               elis_write_fp(S, obj, stdout);                                   \
-            } else {                                                           \
+            else                                                               \
               fputs(STRING(obj), stdout);                                      \
-            }                                                                  \
+                                                                               \
             fputc(' ', stdout);                                                \
           }                                                                    \
           fputc('\n', stdout);                                                 \
@@ -909,11 +917,9 @@ static void set(elis_State *S, elis_Object *sym, elis_Object *val,
   return res;                                                                  \
 }
 
-static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env,
-                          elis_Object **new_env);
+static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env);
 
-static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env,
-                         elis_Object **new_env) {
+static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env) {
   elis_Object call;
 
   if (TYPE(obj) == ELIS_SYMBOL) return CDR(lookup(obj, env));
@@ -923,13 +929,10 @@ static elis_Object *eval(elis_State *S, elis_Object *obj, elis_Object *env,
   CDR(&call) = S->calls;
   S->calls = &call;
 
-  CALL(eval(S, elis_next_arg(S, &args), env, NULL),
-       eval_list(S, args, env),
-       CDR(&call));
+  CALL(eval(S, elis_next_arg(S, &args), env, NULL), eval_list(S, args, env), CDR(&call));
 }
 
-static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env,
-                          elis_Object **new_env) {
+static elis_Object *apply(elis_State *S, elis_Object *obj, elis_Object *env, elis_Object **new_env) {
   /* don't evaluate arguments and don't restore call list */
   CALL(elis_next_arg(S, &args), args, S->calls);
 }
@@ -947,37 +950,21 @@ elis_Object *elis_apply(elis_State *S, elis_Object *func, elis_Object *args) {
 
 elis_Object *elis_next_arg(elis_State *S, elis_Object **args) {
   elis_Object *obj = *args;
-  if (TYPE(obj) != ELIS_PAIR) {
-    elis_error(S, obj == &nil ? "too few arguments" :
-               "dotted pair in argument list");
-  }
+  if (TYPE(obj) != ELIS_PAIR)
+    elis_error(S, obj == &nil ? "too few arguments" : "dotted pair in argument list");
   *args = CDR(obj);
   return CAR(obj);
-}
-
-void elis_set(elis_State *S, elis_Object *sym, elis_Object *obj) {
-  CDR(CDR(check_type(S, sym, ELIS_SYMBOL))) = obj;
-}
-
-void elis_setcar(elis_State *S, elis_Object *obj, elis_Object *val) {
-  CAR(check_type(S, obj, ELIS_PAIR)) = val;
-}
-
-void elis_setcdr(elis_State *S, elis_Object *obj, elis_Object *val) {
-  CDR(check_type(S, obj, ELIS_PAIR)) = val;
 }
 
 #ifdef ELIS_TESTBED
 
 #include <setjmp.h>
 
-static jmp_buf jmpbuf;
-
-static void on_error(elis_State *S, const char *msg, elis_Object *calls) {
+static void on_error(elis_State *S, const char *msg, elis_Object *calls, void *udata) {
   (void) S;
   (void) calls;
   fprintf(stderr, "error: %s\n", msg);
-  longjmp(jmpbuf, -1);
+  longjmp(*(jmp_buf *) udata, -1);
 }
 
 int main(int argc, char **argv) {
@@ -988,7 +975,10 @@ int main(int argc, char **argv) {
   if (!fp) elis_error(S, "could not open input file");
 
   if (fp == stdin) {
-    elis_on_error(S, on_error);
+    static jmp_buf jmpbuf;
+    elis_OnError *on_err = elis_on_error(S);
+    on_err->callback = on_error;
+    on_err->userdata = &jmpbuf;
     setjmp(jmpbuf);
   }
 
