@@ -1,0 +1,78 @@
+;
+; Simple closure based OOP.
+; You can extend this example to get `instanceof`, multiple inheritance and etc.
+;
+
+(= class (macro body
+  (list 'func 'args
+    ; declare `super` and `self` properties
+    '(let (super . self) nil)
+
+    ; put custom declarations
+     (cons 'let body)
+
+    ; define `self` dispatcher (closure)
+    '(= self (func (method . args)
+       (let local (eval method))
+       (if local
+         (apply local args)
+         (apply super (cons method args)))))
+
+    ; call `init` constructor
+    '(apply init args)
+
+    ; return `self`
+    'self)))
+
+(= getter (macro (field)
+  (list 'func () field)))
+
+(= setter (macro (field)
+  (let sym (gensym))
+  (list 'func (list sym)
+    (list '= field sym))))
+
+;
+; Person class
+;
+
+(= Person (class
+  :name     "unknown"
+  :get-name (getter :name)
+
+  :greet    (func ()
+    (print "Hello, my name is" :name))
+
+  init      (setter :name)))
+
+;
+; Employee class
+;
+
+(= Employee (class
+  :post     "none"
+  :get-post (getter :post)
+
+  :greet (func ()
+    (super':greet)
+    (print (super':get-name) "is" :post))
+
+  :work (func ()
+    (print (super':get-name) "working hard..."))
+
+  init (func (name post)
+    (= super (Person name)
+       :post post))))
+
+;
+; Example
+;
+
+(= man1 (Employee "Rayan" "programmer")
+   man2 (Person   "Nicolas"))
+
+(man1':greet)
+(man1':work)
+
+(man2':greet)
+(man2':work) ; here you got an error 
