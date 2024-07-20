@@ -473,7 +473,7 @@ static elis_Object *read_object(elis_State *S, elis_Reader func, void *udata) {
       return END_OF_SEXPR;
 
     case ';':
-      while (chr != '\0' && chr != '\n' && chr != '\r') chr = func(S, udata);
+      while (!strchr("\n\r", chr)) chr = func(S, udata);
       return read_object(S, func, udata);
 
     case '\'':
@@ -540,7 +540,7 @@ static elis_Object *read_object(elis_State *S, elis_Reader func, void *udata) {
         if (str == buf + sizeof(buf) - 1) elis_error(S, "symbol too long");
         *str++ = chr;
         chr = func(S, udata);
-      } while (chr != '\0' && !strchr(" \n\t\r\"'();", chr));
+      } while (!strchr(" \n\t\r\"'();", chr));
 
       *str = '\0';
       S->next_char = chr;
@@ -573,7 +573,7 @@ static void write_string(elis_State *S, elis_Writer func, void *udata,
                          const char *str) {
   while (*str != '\0') {
     char chr = *str++;
-    if (chr == '"') func(S, udata, '\\');
+    if (strchr("\"\\", chr)) func(S, udata, '\\');
     func(S, udata, chr);
   }
 }
